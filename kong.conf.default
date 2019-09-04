@@ -337,6 +337,7 @@
                                  #   `Server` and `Via`.
                                  # - `latency_tokens`: Same as specifying
                                  #   `X-Kong-Proxy-Latency`,
+                                 #   `X-Kong-Response-Latency`,
                                  #   `X-Kong-Admin-Latency` and
                                  #   `X-Kong-Upstream-Latency`
                                  #
