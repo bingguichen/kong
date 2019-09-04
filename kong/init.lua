@@ -1063,7 +1063,7 @@ function Kong.handle_error()
 end
 
 
-function Kong.serve_admin_api(options)
+function Kong.admin_content(options)
   kong_global.set_phase(kong, PHASES.admin_api)
 
   log_init_worker_errors(ngx.ctx)
