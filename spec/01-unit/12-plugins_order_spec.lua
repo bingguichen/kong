@@ -1,3 +1,4 @@
+require "spec.helpers" -- initializes 'kong' global for plugins
 local conf_loader = require "kong.conf_loader"
 
 
@@ -11,6 +12,10 @@ describe("Plugins", function()
     local conf = assert(conf_loader(nil, {
       plugins = "bundled",
     }))
+
+    local kong_global = require "kong.global"
+    _G.kong = kong_global.new()
+    kong_global.init_pdk(kong, conf, nil)
 
     plugins = {}
 
@@ -52,13 +57,14 @@ describe("Plugins", function()
       "bot-detection",
       "cors",
       "session",
-      "kubernetes-sidecar-injector",
       "jwt",
       "oauth2",
       "key-auth",
       "ldap-auth",
       "basic-auth",
       "hmac-auth",
+      "acme",
+      "grpc-gateway",
       "ip-restriction",
       "request-size-limiting",
       "acl",
@@ -78,6 +84,7 @@ describe("Plugins", function()
       "tcp-log",
       "loggly",
       "syslog",
+      "grpc-web",
       "request-termination",
       "correlation-id",
       "post-function",

@@ -63,6 +63,7 @@ local field_schema = {
   { reference = { type = "string" }, },
   { auto = { type = "boolean" }, },
   { unique = { type = "boolean" }, },
+  { unique_across_ws = { type = "boolean" }, },
   { on_delete = { type = "string", one_of = { "restrict", "cascade", "null" } }, },
   { default = { type = "self" }, },
   { abstract = { type = "boolean" }, },
@@ -82,14 +83,70 @@ for _, field in ipairs(field_schema) do
   data.nilable = not data.required
 end
 
+local field_entity_checks = {
+  -- if 'unique_across_ws' is set, then 'unique' must be set too
+  conditional = {
+    if_field = "unique_across_ws", if_match = { eq = true },
+    then_field = "unique", then_match = { eq = true, required = true },
+  }
+}
+
 local fields_array = {
   type = "array",
   elements = {
     type = "map",
     keys = { type = "string" },
-    values = { type = "record", fields = field_schema },
+    values = { type = "record", fields = field_schema, entity_checks = field_entity_checks },
     required = true,
     len_eq = 1,
+  },
+}
+
+local transformations_array = {
+  type = "array",
+  nilable = true,
+  elements = {
+    type = "record",
+    fields = {
+      {
+        input = {
+          type = "array",
+          required = true,
+          elements = {
+            type = "string"
+          },
+        },
+      },
+      {
+        needs = {
+          type = "array",
+          required = false,
+          elements = {
+            type = "string"
+          },
+        }
+      },
+      {
+        on_write = {
+          type = "function",
+          required = false,
+        },
+      },
+      {
+        on_read = {
+          type = "function",
+          required = false,
+        },
+      },
+    },
+    entity_checks = {
+      {
+        at_least_one_of = {
+          "on_write",
+          "on_read",
+        },
+      },
+    },
   },
 }
 
@@ -189,6 +246,7 @@ local shorthands_array = {
 }
 
 table.insert(field_schema, { entity_checks = entity_checks_schema })
+table.insert(field_schema, { shorthands = shorthands_array })
 
 local meta_errors = {
   ATTRIBUTE = "field of type '%s' cannot have attribute '%s'",
@@ -256,6 +314,13 @@ local attribute_types = {
     ["string"] = true,
     ["number"] = true,
     ["integer"] = true,
+    ["foreign"] = true,
+  },
+  unique_across_ws = {
+    ["string"] = true,
+    ["number"] = true,
+    ["integer"] = true,
+    ["foreign"] = true,
   },
   abstract = {
     ["string"] = true,
@@ -337,6 +402,42 @@ check_field = function(k, field, errors)
 end
 
 
+local function has_schema_field(schema, name)
+  if schema == nil then
+    return false
+  end
+
+  local dot = string.find(name, ".", 1, true)
+  if not dot then
+    for _, field in ipairs(schema.fields) do
+      local k = next(field)
+      if k == name then
+        return true
+      end
+    end
+
+    return false
+  end
+
+  local hd, tl = string.sub(name, 1, dot - 1), string.sub(name, dot + 1)
+  for _, field in ipairs(schema.fields) do
+    local k = next(field)
+    if k == hd then
+      if field[hd] and field[hd].type == "foreign" then
+        -- metaschema has no access to foreign schemas
+        -- so we just trust the developer of the schema.
+
+        return true
+      end
+
+      return has_schema_field(field[hd], tl)
+    end
+  end
+
+  return false
+end
+
+
 local MetaSchema = Schema.new({
 
   name = "metaschema",
@@ -353,6 +454,12 @@ local MetaSchema = Schema.new({
         type = "array",
         elements = { type = "string" },
         required = true,
+      },
+    },
+    {
+      workspaceable = {
+        type = "boolean",
+        nilable = true
       },
     },
     {
@@ -441,6 +548,9 @@ local MetaSchema = Schema.new({
         nilable = true
       },
     },
+    {
+      transformations = transformations_array,
+    },
   },
 
   check = function(schema)
@@ -512,6 +622,50 @@ local MetaSchema = Schema.new({
         if k == "ttl" then
           errors["ttl"] = meta_errors.TTL_RESERVED
           break
+        end
+      end
+    end
+
+    if schema.transformations then
+      for i, transformation in ipairs(schema.transformations) do
+        for j, input in ipairs(transformation.input) do
+          if not has_schema_field(schema, input) then
+            if not errors.transformations then
+              errors.transformations = {}
+            end
+
+            if not errors.transformations.input then
+              errors.transformations.input = {}
+            end
+
+
+            if not errors.transformations.input[i] then
+              errors.transformations.input[i] = {}
+            end
+
+            errors.transformations.input[i][j] = string.format("invalid field name: %s", input)
+          end
+        end
+
+        if transformation.needs then
+          for j, need in ipairs(transformation.needs) do
+            if not has_schema_field(schema, need) then
+              if not errors.transformations then
+                errors.transformations = {}
+              end
+
+              if not errors.transformations.needs then
+                errors.transformations.needs = {}
+              end
+
+
+              if not errors.transformations.needs[i] then
+                errors.transformations.needs[i] = {}
+              end
+
+              errors.transformations.needs[i][j] = string.format("invalid field name: %s", need)
+            end
+          end
         end
       end
     end

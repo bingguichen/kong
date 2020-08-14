@@ -401,19 +401,8 @@ describe("routes schema", function()
 
         local ok, err = Routes:validate(route)
         assert.falsy(ok)
-        assert.equal("invalid value: " .. invalid_hosts[i], err.hosts[1])
+        assert.equal("invalid hostname: " .. invalid_hosts[i], err.hosts[1])
       end
-    end)
-
-    it("rejects values with a valid port", function()
-      local route = {
-        hosts = { "example.com:80" },
-        protocols = { "http" },
-      }
-
-      local ok, err = Routes:validate(route)
-      assert.falsy(ok)
-      assert.equal("must not have a port", err.hosts[1])
     end)
 
     it("rejects values with an invalid port", function()
@@ -424,7 +413,7 @@ describe("routes schema", function()
 
       local ok, err = Routes:validate(route)
       assert.falsy(ok)
-      assert.equal("must not have a port", err.hosts[1])
+      assert.equal("invalid port number", err.hosts[1])
     end)
 
     it("rejects invalid wildcard placement", function()
@@ -482,6 +471,8 @@ describe("routes schema", function()
         "hello.abcd",
         "example_api.com",
         "localhost",
+        "example.com:80",
+        "example.com:8080",
         -- below:
         -- punycode examples from RFC3492;
         -- https://tools.ietf.org/html/rfc3492#page-14
@@ -515,6 +506,7 @@ describe("routes schema", function()
       local valid_hosts = {
         "example.*",
         "*.example.org",
+        "*.example.org:321",
       }
 
       for i = 1, #valid_hosts do
@@ -970,20 +962,7 @@ describe("routes schema", function()
     describe("'snis' matching attribute", function()
       local s = { id = "a4fbd24e-6a52-4937-bd78-2536713072d2" }
 
-      it("accepts valid SNIs for stream Routes", function()
-        for _, sni in ipairs({ "example.org", "www.example.org" }) do
-          local route = Routes:process_auto_fields({
-            protocols = { "tcp", "tls" },
-            snis = { sni },
-            service = s,
-          }, "insert")
-          local ok, errs = Routes:validate(route)
-          assert.is_nil(errs)
-          assert.truthy(ok)
-        end
-      end)
-
-      for _, protocol in ipairs {"https", "grpcs"} do
+      for _, protocol in ipairs { "tls", "https", "grpcs" } do
         it("accepts valid SNIs for " .. protocol .. " Routes", function()
           for _, sni in ipairs({ "example.org", "www.example.org" }) do
             local route = Routes:process_auto_fields({

@@ -25,7 +25,7 @@ describe("declarative config: validate", function()
   end)
 
   describe("_format_version", function()
-    it("requires version 1.1", function()
+    it("requires version 1.1 or 2.1", function()
 
       local ok, err = DeclarativeConfig:validate(lyaml.load([[
         _format_version: 1.1
@@ -36,15 +36,19 @@ describe("declarative config: validate", function()
       }, err)
 
       ok, err = DeclarativeConfig:validate(lyaml.load([[
-        _format_version: "1.2"
+        _format_version: "foobar"
       ]]))
       assert.falsy(ok)
       assert.same({
-        ["_format_version"] = "value must be 1.1"
+        ["_format_version"] = "expected one of: 1.1, 2.1"
       }, err)
 
       assert(DeclarativeConfig:validate(lyaml.load([[
         _format_version: "1.1"
+      ]])))
+
+      assert(DeclarativeConfig:validate(lyaml.load([[
+        _format_version: "2.1"
       ]])))
     end)
   end)
@@ -631,7 +635,6 @@ describe("declarative config: validate", function()
           ["oauth2_credentials"] = {
             {
               ["name"] = "required field missing",
-              ["redirect_uris"] = "required field missing",
             }
           }
         }, err)
@@ -697,28 +700,6 @@ describe("declarative config: validate", function()
           ]]))
 
           assert(DeclarativeConfig:validate(config))
-        end)
-
-        it("verifies required fields", function()
-          local ok, err = DeclarativeConfig:validate(lyaml.load([[
-            _format_version: "1.1"
-            consumers:
-            - username: bob
-              oauth2_credentials:
-              - name: foo
-          ]]))
-          assert.falsy(ok)
-          assert.same({
-            ["consumers"] = {
-              {
-                ["oauth2_credentials"] = {
-                  {
-                    ["redirect_uris"] = "required field missing",
-                  }
-                }
-              }
-            }
-          }, err)
         end)
 
         it("performs regular validations", function()

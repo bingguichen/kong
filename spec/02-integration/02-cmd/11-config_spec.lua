@@ -2,11 +2,29 @@ local helpers = require "spec.helpers"
 local constants = require "kong.constants"
 local cjson = require "cjson"
 local lyaml = require "lyaml"
+local lfs = require "lfs"
+
+
+local function trim(s)
+  return s:gsub("%s+", " "):gsub("^%s*", ""):gsub("%s*$", "")
+end
 
 
 local function sort_by_name(a, b)
   return a.name < b.name
 end
+
+
+local function convert_yaml_nulls(tbl)
+  for k,v in pairs(tbl) do
+    if v == lyaml.null then
+      tbl[k] = ngx.null
+    elseif type(v) == "table" then
+      convert_yaml_nulls(v)
+    end
+  end
+end
+
 
 describe("kong config", function()
   local bp, db
@@ -66,7 +84,13 @@ describe("kong config", function()
           config:
             port: 10000
             host: 127.0.0.1
-
+      plugins:
+      - name: correlation-id
+        id: 467f719f-a544-4a8f-bc4b-7cd12913a9d4
+        config:
+          header_name: null
+          generator: "uuid"
+          echo_downstream: false
     ]])
 
     finally(function()
@@ -80,7 +104,7 @@ describe("kong config", function()
       anonymous_reports = "on",
     }))
 
-    local thread = helpers.udp_server(constants.REPORTS.STATS_PORT)
+    local thread = helpers.tcp_server(constants.REPORTS.STATS_PORT)
 
     assert(helpers.kong_exec("config db_import " .. filename, {
       prefix = helpers.test_conf.prefix,
@@ -108,6 +132,26 @@ describe("kong config", function()
     local json = cjson.decode(body)
     assert.equals(2, #json.data)
 
+    local res = client:get("/plugins/467f719f-a544-4a8f-bc4b-7cd12913a9d4")
+    local body = assert.res_status(200, res)
+    local json = cjson.decode(body)
+    json.created_at = nil
+    json.protocols = nil
+    assert.same({
+      name = "correlation-id",
+      id = "467f719f-a544-4a8f-bc4b-7cd12913a9d4",
+      route = ngx.null,
+      service = ngx.null,
+      consumer = ngx.null,
+      enabled = true,
+      config = {
+        header_name = ngx.null,
+        generator = "uuid",
+        echo_downstream = false,
+      },
+      tags = ngx.null,
+    }, json)
+
     assert(helpers.stop_kong())
   end)
 
@@ -115,7 +159,7 @@ describe("kong config", function()
     local filename = helpers.make_yaml_file([[
       _format_version: "1.1"
       services:
-      - name: foo
+      - name: foobar
         host: example.com
         protocol: https
         _comment: my comment
@@ -148,6 +192,44 @@ describe("kong config", function()
     assert(helpers.kong_exec("config db_import " .. filename, {
       prefix = helpers.test_conf.prefix,
     }))
+  end)
+
+  it("#db config db_import catches errors in input", function()
+    assert(helpers.start_kong({
+      nginx_conf = "spec/fixtures/custom_nginx.template",
+    }))
+
+    finally(function()
+      helpers.stop_kong()
+    end)
+
+    local filename = helpers.make_yaml_file([[
+      _format_version: "1.1"
+      services:
+      - name: foobar
+        host: []
+        port: -23
+        protocol: https
+        _comment: my comment
+        _ignore:
+        - foo: bar
+        routes: 123
+    ]])
+
+    local ok, err = helpers.kong_exec("config db_import " .. filename, {
+      prefix = helpers.test_conf.prefix,
+    })
+    assert.falsy(ok)
+
+    assert.same(trim([[
+      Error: Failed parsing:
+      in 'services':
+      - in entry 1 of 'services':
+        in 'host': expected a string
+        in 'port': value should be between 0 and 65535
+        in 'routes': expected an array
+      Run with --v (verbose) or --vv (debug) for more details
+    ]]), trim(err))
   end)
 
   it("#db config db_import is idempotent based on endpoint_key and cache_key", function()
@@ -307,6 +389,9 @@ describe("kong config", function()
     assert(db.services:truncate())
     assert(db.consumers:truncate())
     assert(db.acls:truncate())
+    assert(db.certificates:truncate())
+    assert(db.targets:truncate())
+    assert(db.upstreams:truncate())
 
     local filename = os.tmpname()
     os.remove(filename)
@@ -315,22 +400,24 @@ describe("kong config", function()
     -- starting kong just so the prefix is properly initialized
     assert(helpers.start_kong())
 
-    local service1 = bp.services:insert({ name = "service1" })
-    local route1 = bp.routes:insert({ service = service1, methods = { "POST" }, name = "a" })
+    local service1 = bp.services:insert({ name = "service1" }, { nulls = true })
+    local route1 = bp.routes:insert({ service = service1, methods = { "POST" }, name = "a" }, { nulls = true })
     local plugin1 = bp.hmac_auth_plugins:insert({
       service = service1,
-    })
+    }, { nulls = true })
     local plugin2 = bp.key_auth_plugins:insert({
       service = service1,
-    })
+    }, { nulls = true })
 
-    local service2 = bp.services:insert({ name = "service2" })
-    local route2 = bp.routes:insert({ service = service2, methods = { "GET" }, name = "b" })
+    local service2 = bp.services:insert({ name = "service2" }, { nulls = true })
+    local route2 = bp.routes:insert({ service = service2, methods = { "GET" }, name = "b" }, { nulls = true })
     local plugin3 = bp.tcp_log_plugins:insert({
       service = service2,
-    })
-    local consumer = bp.consumers:insert()
-    local acls = bp.acls:insert({ consumer = consumer })
+    }, { nulls = true })
+    local consumer = bp.consumers:insert(nil, { nulls = true })
+    local acls = bp.acls:insert({ consumer = consumer }, { nulls = true })
+
+    local keyauth = bp.keyauth_credentials:insert({ consumer = consumer, key = "hello" }, { nulls = true })
 
     assert(helpers.kong_exec("config db_export " .. filename, {
       prefix = helpers.test_conf.prefix,
@@ -352,14 +439,19 @@ describe("kong config", function()
     table.sort(toplevel_keys)
     assert.same({
       "_format_version",
+      "_transform",
       "acls",
       "consumers",
+      "keyauth_credentials",
       "plugins",
       "routes",
       "services",
     }, toplevel_keys)
 
-    assert.equals("1.1", yaml._format_version)
+    convert_yaml_nulls(yaml)
+
+    assert.equals("2.1", yaml._format_version)
+    assert.equals(false, yaml._transform)
 
     assert.equals(2, #yaml.services)
     table.sort(yaml.services, sort_by_name)
@@ -395,5 +487,99 @@ describe("kong config", function()
     assert.equals(1, #yaml.acls)
     assert.equals(acls.group, yaml.acls[1].group)
     assert.equals(consumer.id, yaml.acls[1].consumer)
+
+    assert.equals(1, #yaml.keyauth_credentials)
+    assert.equals(keyauth.key, yaml.keyauth_credentials[1].key)
+    assert.equals(consumer.id, yaml.keyauth_credentials[1].consumer)
+  end)
+
+  it("#db config db_import works when foreign keys need to be resolved", function()
+    assert(db.consumers:truncate())
+    assert(db.basicauth_credentials:truncate())
+
+    -- note that routes have no name
+    local filename = helpers.make_yaml_file([[
+      _format_version: "1.1"
+      consumers:
+      - username: consumer
+        basicauth_credentials:
+        - username: username
+          password: password
+    ]])
+
+    assert(helpers.start_kong({
+      nginx_conf = "spec/fixtures/custom_nginx.template",
+    }))
+
+    assert(helpers.kong_exec("config db_import " .. filename, {
+      prefix = helpers.test_conf.prefix,
+    }))
+
+    local client = helpers.admin_client()
+
+    local res = client:get("/consumers")
+    local body = assert.res_status(200, res)
+    local json = cjson.decode(body)
+    assert.equals(1, #json.data)
+
+    local res = client:get("/basic-auths")
+    local body = assert.res_status(200, res)
+    local json = cjson.decode(body)
+    assert.equals(1, #json.data)
+
+    assert(helpers.stop_kong())
+
+    assert(db.consumers:truncate())
+    assert(db.basicauth_credentials:truncate())
+  end)
+
+  it("#db config parse works when foreign keys need to be resolved", function()
+    -- note that routes have no name
+    local filename = helpers.make_yaml_file([[
+      _format_version: "1.1"
+      consumers:
+      - username: consumer
+        basicauth_credentials:
+        - username: username
+          password: password
+    ]])
+
+    assert(helpers.kong_exec("config parse " .. filename, {
+      prefix = helpers.test_conf.prefix,
+    }))
+  end)
+
+  it("config init creates kong.yml by default", function()
+    local kong_yml_exists = false
+    if lfs.attributes("kong.yml") then
+      kong_yml_exists = true
+      os.execute("mv kong.yml kong.yml~")
+    end
+    finally(function()
+      if kong_yml_exists then
+        os.execute("mv kong.yml~ kong.yml")
+      else
+        os.remove("kong.yml")
+      end
+    end)
+
+    os.remove("kong.yml")
+    assert.is_nil(lfs.attributes("kong.yml"))
+    assert(helpers.kong_exec("config init"))
+    assert.not_nil(lfs.attributes("kong.yml"))
+    assert(helpers.kong_exec("config parse kong.yml"))
+  end)
+
+  it("config init can take an argument", function()
+    local tmpname = os.tmpname() .. ".yml"
+    finally(function()
+      os.remove(tmpname)
+    end)
+
+    os.remove(tmpname)
+    assert.is_nil(lfs.attributes(tmpname))
+    assert(helpers.kong_exec("config init " .. tmpname))
+    assert.not_nil(lfs.attributes(tmpname))
+    assert(helpers.kong_exec("config parse " .. tmpname))
   end)
 end)
